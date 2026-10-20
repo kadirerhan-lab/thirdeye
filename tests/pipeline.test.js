@@ -71,3 +71,18 @@ test('uçtan uca: sentetik taramalar doğru kategoriye düşer', async () => {
     assert.equal(scoreTirads(suggestTirads(n.features).sel).category, expect);
   }
 });
+
+test('model modülü tarayıcı dışında güvenle yüklenir ve grup ayrımı sızıntısızdır', async () => {
+  const { hasTF, groupFolds } = await import('../web/js/model.js');
+  assert.equal(hasTF(), false);
+  const cases = [];
+  for (let g = 0; g < 20; g++) for (let f = 0; f < 3; f++) cases.push({ group: `n${g}`, label: g % 4 === 0 ? 1 : 0 });
+  const folds = groupFolds(cases, 5, 1);
+  const seen = new Map();
+  folds.forEach((idx, k) => idx.forEach((i) => {
+    const g = cases[i].group;
+    assert.ok(!seen.has(g) || seen.get(g) === k, 'aynı nodül iki farklı katta olmamalı');
+    seen.set(g, k);
+  }));
+  assert.equal(folds.flat().length, cases.length);
+});

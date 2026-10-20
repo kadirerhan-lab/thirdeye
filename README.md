@@ -52,6 +52,27 @@ npm install
 node tools/record-demo.mjs
 ```
 
+## Gerçek veriyle eğitim: Stanford AIMI Thyroid Ultrasound Cine-clip
+
+[Stanford AIMI](https://aimi.stanford.edu/datasets/thyroid-ultrasound-cine-clip) veri seti, biyopsiyle doğrulanmış 192 nodüle ait (167 hasta) ultrason cine-clip görüntülerini, radyolog segmentasyonlarını, TI-RADS tanımlayıcılarını ve histopatoloji sonuçlarını içerir. Veri seti ticari olmayan araştırma içindir. Erişim için [Redivis sayfasında](https://stanford.redivis.com/datasets/2n5z-4m99zdpyp) hesap açmak, AIMI üyeliğine katılmak ve *Stanford Research Agreement*'ı imzalamak gerekir. Ham görüntüler bu repoya eklenmez; `data/` klasörü git dışıdır.
+
+Gereksinimler: Python 3.12 ve proje içi sanal ortam (`py -3.12 -m venv .venv`, ardından `.venv\Scripts\pip install h5py numpy pandas torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple`).
+
+```bash
+# 1. Yapıyı incele (dataset.hdf5 ≈ 36 GB, metadata tablosu CSV olarak dışa aktarılır)
+.venv/Scripts/python tools/stanford/extract.py --hdf5 D:/stanford/dataset.hdf5 --metadata D:/stanford/metadata.csv --inspect
+# 2. Nodül başına seçili kareleri ve uzman maskelerini çıkar
+.venv/Scripts/python tools/stanford/extract.py --hdf5 D:/stanford/dataset.hdf5 --metadata D:/stanford/metadata.csv --out data/stanford
+# 3. ThirdEye özelliklerini ve model yamalarını hesapla (uygulamayla aynı kod)
+npm run stanford:prepare
+# 4. PyTorch ile nodül bazında 5 katlı çapraz doğrulama + son model
+.venv/Scripts/python tools/stanford/train_torch.py --data data/stanford
+# 5. TensorFlow.js'e aktar, eşdeğerliği doğrula, web/models/stanford ve docs/stanford-sonuclari.md yaz
+npm run stanford:finalize
+```
+
+Sonuçta oluşan model (`web/models/stanford/`) sitede otomatik yüklenir: kullanıcının kendi tarayıcısında eğittiği bir model yoksa skor bu modeli kullanır. Rapor, modeli radyoloğun TI-RADS puanıyla ve ThirdEye'ın otomatik TI-RADS önerisiyle aynı nodüller üzerinde karşılaştırır. Ayrıca otomatik segmentasyonun uzman maskesine uyumunu (Dice) ve tanımlayıcı bazında uyumu raporlar.
+
 ## Proje yapısı
 
 ```
@@ -69,6 +90,7 @@ web/                 Yayınlanan statik uygulama (GitHub Pages)
   js/pipeline.js     Uçtan uca analiz akışı
 tests/               Node testleri
 tools/record-demo.mjs  Otomatik demo videosu
+tools/stanford/        Stanford veri seti hattı: extract.py → prepare.mjs → train_torch.py → finalize.mjs
 server.js            Bağımlılıksız yerel sunucu
 ```
 

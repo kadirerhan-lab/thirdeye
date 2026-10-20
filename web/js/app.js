@@ -6,6 +6,19 @@ import { TIRADS, TR_INFO, scoreTirads, suggestTirads, recommendation } from './t
 import { fuseRisk, modelReliability } from './risk.js';
 import { generateCase } from './synth.js';
 import { hasTF, trainModel, loadModel, deleteModel, exportModel, predict } from './model.js';
+
+// Gerçek klinik veriyle (Stanford) ön-eğitilmiş model sitede varsa, yerel model yokken kullanılır.
+async function loadPretrained() {
+  if (!hasTF()) return null;
+  try {
+    const res = await fetch('models/stanford/meta.json', { cache: 'no-cache' });
+    if (!res.ok) return null;
+    const meta = await res.json();
+    const model = await window.tf.loadLayersModel('models/stanford/model.json');
+    return { model, meta };
+  } catch { return null; }
+}
+const modelName = (meta) => (meta?.origin === 'pretrained' ? `Stanford modeli v${meta.version}` : `Yerel model v${meta.version}`);
 import * as store from './store.js';
 
 const $ = (id) => document.getElementById(id);
@@ -563,7 +576,7 @@ function renderScore() {
     [`TI-RADS referans riski (${tr.category}, ${tr.points} puan)`, 'ACR TI-RADS çok merkezli doğrulama verisi', fmtPct(fused.prior)],
   ];
   if (prediction) {
-    rows.push(['Görüntü modeli olasılığı', `Model v${meta.version} · dengeli eğitim seti (%50 prevalans)`, fmtPct(prediction.p)]);
+    rows.push(['Görüntü modeli olasılığı', `${modelName(meta)} · dengeli eğitim seti (%50 prevalans)`, fmtPct(prediction.p)]);
     rows.push(['Model güvenilirlik ağırlığı (w)', `Doğrulama AUC ${fmtNum(meta.metrics.auc ?? 0, 2)} · ${meta.nTrain + meta.nVal} vaka (${meta.nClinical ?? 0} klinik)${(meta.nClinical ?? 0) < 30 ? ' · 30 klinik vakaya kadar yarım ağırlık' : ''}`, fmtNum(fused.w, 2)]);
   } else {
     rows.push(['Görüntü modeli', state.model ? 'Tahmin üretilemedi' : 'Henüz eğitilmedi; skor yalnızca TI-RADS’a dayanıyor', '–']);
@@ -752,7 +765,7 @@ function renderModelInfo() {
     return;
   }
   const m = meta.metrics;
-  pill.textContent = `Model v${meta.version} · AUC ${fmtNum(m.auc ?? 0, 2)} · ${meta.nTrain + meta.nVal} vaka`;
+  pill.textContent = `${modelName(meta)} · AUC ${fmtNum(m.auc ?? 0, 2)} · ${meta.nTrain + meta.nVal} vaka`;
   pill.classList.add('is-ready');
   drawLoss(meta.trainHistory); drawRoc(m);
   $('rocCaption').textContent = `ROC · doğrulama seti (${m.nVal} vaka)`;
@@ -875,7 +888,9 @@ function bind() {
     await deleteModel(); await store.setKV('modelMeta', null);
     if (state.model) state.model.dispose();
     state.model = null; state.meta = null;
-    $('trainStatus').textContent = 'Model sıfırlandı. Skor yeniden yalnızca TI-RADS’a dayanıyor.';
+    const pre = await loadPretrained();
+    if (pre) { state.model = pre.model; state.meta = pre.meta; }
+    $('trainStatus').textContent = pre ? 'Yerel model silindi; Stanford ön-eğitimli modele dönüldü.' : 'Model sıfırlandı. Skor yeniden yalnızca TI-RADS’a dayanıyor.';
     renderModelInfo(); updateScore();
   });
   $('exportModelBtn').addEventListener('click', () => state.model && exportModel(state.model));
@@ -915,6 +930,10 @@ async function init() {
     if (meta && hasTF()) {
       const model = await loadModel();
       if (model) { state.model = model; state.meta = meta; }
+    }
+    if (!state.model) {
+      const pre = await loadPretrained();
+      if (pre) { state.model = pre.model; state.meta = pre.meta; }
     }
   } catch (e) { console.warn(e); }
   renderModelInfo();
