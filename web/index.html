@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ThirdEye Tiroid Nodül Analizi</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Tiroid ultrason videosundan nodül tespiti, ACR TI-RADS önerisi ve hekim geri bildirimiyle öğrenen risk skoru. Araştırma prototipi.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+      <path d="M3 20 C 10 9, 30 9, 37 20 C 30 31, 10 31, 3 20 Z" fill="none" stroke="currentColor" stroke-width="2.2"/>
+      <circle cx="20" cy="20" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>
+      <circle cx="20" cy="20" r="2.2" fill="currentColor"/>
+      <path d="M20 4 V8 M20 32 V36" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    </svg>
+    <div class="brand-text">
+      <strong>ThirdEye</strong>
+      <span>Tiroid nodülü karar destek sistemi · araştırma prototipi</span>
+    </div>
+  </div>
+  <div class="status">
+    <span id="modelPill" class="pill" title="Öğrenen modelin durumu">Model eğitilmedi</span>
+    <span id="dataPill" class="pill" title="Yerel veri setindeki vaka sayısı">0 vaka</span>
+  </div>
+</header>
+
+<p class="disclaimer">Klinik tanı veya tedavi kararı için kullanılamaz. Sonuçlar karar desteği amaçlıdır; tanıyı hekim koyar. Örnek kayıtlar sentetiktir.</p>
+
+<main class="workspace">
+  <section class="viewer-col" aria-label="Ultrason görüntüleyici">
+    <div class="viewer" id="viewer">
+      <canvas id="view" width="640" height="480" aria-label="Ultrason karesi ve analiz katmanları"></canvas>
+      <div id="viewerEmpty" class="viewer-empty">
+        <p class="viewer-empty-title">Ultrason kaydı bekleniyor</p>
+        <p>Bir video veya görüntü yükleyin ya da sağdaki örnek taramalardan birini açın.</p>
+      </div>
+      <div id="busy" class="busy" hidden>
+        <span id="busyText">Hazırlanıyor…</span>
+        <div class="busy-bar"><i id="busyBar"></i></div>
+      </div>
+      <div id="frameBadge" class="frame-badge" hidden></div>
+    </div>
+
+    <div class="transport">
+      <button id="playBtn" class="icon-btn" type="button" aria-label="Oynat" disabled>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path id="playIcon" d="M6 4 L16 10 L6 16 Z"/></svg>
+      </button>
+      <input id="frameSlider" type="range" min="0" max="0" value="0" aria-label="Kare" disabled>
+      <span id="frameLabel" class="mono frame-label">– / –</span>
+    </div>
+    <div class="view-options">
+      <div class="seg" role="group" aria-label="Görüntü">
+        <button type="button" id="viewClean" class="seg-btn is-on" aria-pressed="true">Temizlenmiş</button>
+        <button type="button" id="viewOrig" class="seg-btn" aria-pressed="false">Orijinal</button>
+      </div>
+      <label class="check"><input type="checkbox" id="optContours" checked> Konturlar</label>
+      <label class="check"><input type="checkbox" id="optMeasure" checked> Ölçüm</label>
+      <label class="check"><input type="checkbox" id="optSaliency"> AI dikkat haritası</label>
+    </div>
+    <p class="hint" id="hint">Nodüle tıklayın: sınır otomatik bulunur. Sürükleyerek elips de çizebilirsiniz.</p>
+  </section>
+
+  <section class="flow-col" aria-label="Analiz akışı">
+    <nav class="steps" role="tablist">
+      <button type="button" role="tab" class="step is-active" data-step="source"><i></i>Kayıt</button>
+      <button type="button" role="tab" class="step" data-step="nodule"><i></i>Nodül</button>
+      <button type="button" role="tab" class="step" data-step="tirads"><i></i>TI-RADS</button>
+      <button type="button" role="tab" class="step" data-step="score"><i></i>Skor</button>
+      <button type="button" role="tab" class="step" data-step="learn"><i></i>Öğrenme</button>
+    </nav>
+
+    <!-- 1. KAYIT -->
+    <div class="panel" id="panel-source" role="tabpanel">
+      <h2>Ultrason kaydı</h2>
+      <label class="drop" id="drop" for="fileInput">
+        <input id="fileInput" type="file" accept="video/*,image/*" multiple>
+        <span class="drop-title">Video veya görüntü bırakın</span>
+        <span class="drop-sub">MP4 / WebM / MOV video ya da PNG / JPG görüntü dizisi · tıklayıp seçebilirsiniz</span>
+      </label>
+
+      <div class="samples">
+        <span class="label">Sentetik örnek taramalar</span>
+        <div class="btn-row">
+          <button type="button" class="btn" data-sample="malignant">Şüpheli görünüm</button>
+          <button type="button" class="btn" data-sample="benign">İyi huylu görünüm</button>
+          <button type="button" class="btn" data-sample="random">Rastgele vaka</button>
+        </div>
+        <button type="button" class="link-btn" id="downloadSample" hidden>Örnek taramayı .webm video olarak indir</button>
+      </div>
+
+      <div class="settings">
+        <label class="field">
+          <span>Görüntü derinliği</span>
+          <span class="input-unit"><input id="depthInput" type="number" min="1" max="10" step="0.1" value="4.0"><em>cm</em></span>
+        </label>
+        <label class="field">
+          <span>Videodan alınacak kare</span>
+          <select id="framesSelect"><option value="24">24</option><option value="36" selected>36</option><option value="60">60</option></select>
+        </label>
+        <label class="check"><input type="checkbox" id="optClean" checked> Kaliper ve ekran işaretlerini temizle</label>
+      </div>
+
+      <dl class="facts" id="sourceFacts">
+        <div><dt>Kaynak</dt><dd id="fSource">–</dd></div>
+        <div><dt>Kare</dt><dd id="fFrames">–</dd></div>
+        <div><dt>Görüntü alanı</dt><dd id="fSize">–</dd></div>
+        <div><dt>Piksel boyutu</dt><dd id="fScale">–</dd></div>
+        <div><dt>Temizlenen işaret</dt><dd id="fOverlay">–</dd></div>
+      </dl>
+
+      <details class="howto">
+        <summary>Analiz nasıl çalışır?</summary>
+        <ol>
+          <li><b>Ön işleme.</b> Görüntü sektörü kırpılır; kaliper “+ / x”, ölçüm çizgileri ve renkli yazılar bulunup çevre dokudan doldurulur.</li>
+          <li><b>Tespit ve takip.</b> Her karede parankime göre hipo/hiperekoik bölgeler bulunur, kareler arasında izlenir; taramada sabit kesitli yuvarlak yapılar damar olarak elenir.</li>
+          <li><b>Segmentasyon.</b> En büyük kesitte birden çok eşik denenir; sınırı en belirgin olan en kapsayıcı kontur seçilir.</li>
+          <li><b>Özellikler.</b> Boyut, AP/transvers oranı, kenar düzensizliği, ekojenite, kistik oran, ekojenik odaklar (tüm karelerde), posterior bulgu ve doku.</li>
+          <li><b>TI-RADS önerisi.</b> Özellikler ACR TI-RADS tanımlayıcılarına çevrilir; hekim onaylar veya düzeltir.</li>
+          <li><b>Risk skoru.</b> TI-RADS kategorisinin literatür riski, öğrenen modelin doğrulanmış güvenilirliği oranında güncellenir.</li>
+          <li><b>Öğrenme.</b> Sitoloji / patoloji sonucu girilen vakalar veri setine eklenir ve model tarayıcıda yeniden eğitilir.</li>
+        </ol>
+      </details>
+    </div>
+
+    <!-- 2. NODÜL -->
+    <div class="panel" id="panel-nodule" role="tabpanel" hidden>
+      <h2>Nodül tespiti</h2>
+      <label class="field slider-field">
+        <span>Tespit duyarlılığı <output id="sensOut" class="mono">orta</output></span>
+        <input id="sensSlider" type="range" min="0" max="4" step="1" value="2">
+      </label>
+      <div id="candList" class="cand-list"><p class="empty">Kayıt yüklendiğinde nodül adayları burada listelenir.</p></div>
+      <div id="noduleSummary" class="nodule-summary" hidden></div>
+      <div id="featureTables" class="feature-tables"></div>
+    </div>
+
+    <!-- 3. TI-RADS -->
+    <div class="panel" id="panel-tirads" role="tabpanel" hidden>
+      <h2>ACR TI-RADS</h2>
+      <p class="lead">Görüntü analizinin önerisi <span class="ai-tag">AI</span> ile işaretlidir. Uygun olmayan tanımlayıcıyı değiştirin; skor anında güncellenir.</p>
+      <form id="tiradsForm" class="tirads-form"><p class="empty">Önce bir nodül seçin.</p></form>
+      <div id="tiradsResult" class="tirads-result" hidden></div>
+    </div>
+
+    <!-- 4. SKOR -->
+    <div class="panel" id="panel-score" role="tabpanel" hidden>
+      <h2>Malignite risk skoru</h2>
+      <div id="scoreBody"><p class="empty">TI-RADS değerlendirmesi tamamlandığında skor burada görünür.</p></div>
+      <div class="btn-row export-row" id="exportRow" hidden>
+        <button type="button" class="btn" id="exportReport">Raporu indir (HTML)</button>
+        <button type="button" class="btn" id="exportJson">Sonucu indir (JSON)</button>
+      </div>
+    </div>
+
+    <!-- 5. ÖĞRENME -->
+    <div class="panel" id="panel-learn" role="tabpanel" hidden>
+      <h2>Öğrenme döngüsü</h2>
+      <p class="lead">Kesin tanısı bilinen vakalar veri setine eklenir ve model bu tarayıcıda yeniden eğitilir. Veriler cihazdan çıkmaz; dışa aktarılıp merkezler arasında birleştirilebilir.</p>
+
+      <section class="block">
+        <h3>Bu vakanın kesin tanısı</h3>
+        <div id="truthHint" class="note" hidden></div>
+        <div class="field-row">
+          <select id="labelSelect" aria-label="Kesin tanı">
+            <option value="">Tanı seçin…</option>
+            <option value="0|Bethesda II (benign sitoloji)">İyi huylu · Bethesda II</option>
+            <option value="0|Histopatoloji: benign">İyi huylu · histopatoloji</option>
+            <option value="1|Bethesda VI (malign sitoloji)">Kötü huylu · Bethesda VI</option>
+            <option value="1|Histopatoloji: malign">Kötü huylu · histopatoloji</option>
+          </select>
+          <button type="button" class="btn btn-primary" id="addCaseBtn" disabled>Veri setine ekle</button>
+        </div>
+        <p class="fine">Bethesda III–V (belirsiz) sonuçlar etiket gürültüsü yarattığı için eğitime alınmaz.</p>
+      </section>
+
+      <section class="block">
+        <h3>Veri seti</h3>
+        <div class="dataset" id="datasetStats"></div>
+        <div class="btn-row">
+          <select id="synthCount" aria-label="Üretilecek sentetik vaka sayısı"><option value="100">100</option><option value="200" selected>200</option><option value="400">400</option></select>
+          <button type="button" class="btn" id="synthBtn">Sentetik vaka üret</button>
+          <button type="button" class="btn" id="exportData">Dışa aktar</button>
+          <label class="btn" for="importInput">İçe aktar<input id="importInput" type="file" accept="application/json,.json" hidden></label>
+          <button type="button" class="btn btn-quiet" id="clearSynth">Sentetikleri sil</button>
+        </div>
+      </section>
+
+      <section class="block">
+        <h3>Model eğitimi</h3>
+        <div class="btn-row">
+          <label class="field inline"><span>Epok</span><select id="epochSelect"><option>15</option><option selected>30</option><option>50</option></select></label>
+          <button type="button" class="btn btn-primary" id="trainBtn">Modeli eğit</button>
+          <button type="button" class="btn btn-quiet" id="resetModel">Modeli sıfırla</button>
+          <button type="button" class="btn btn-quiet" id="exportModelBtn" hidden>Modeli indir</button>
+        </div>
+        <div id="trainStatus" class="fine"></div>
+        <div class="charts">
+          <figure><canvas id="lossChart" width="320" height="170"></canvas><figcaption>Kayıp (eğitim / doğrulama)</figcaption></figure>
+          <figure><canvas id="rocChart" width="170" height="170"></canvas><figcaption id="rocCaption">ROC eğrisi</figcaption></figure>
+        </div>
+        <div id="metricTiles" class="metric-tiles"></div>
+        <div id="historyTable" class="history"></div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>TI-RADS: ACR 2017 sözlüğü ve boyut eşikleri · Kategori riskleri: Middleton ve ark., AJR 2017</span>
+  <span id="storageNote"></span>
+</footer>
+
+<script src="vendor/tf.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
