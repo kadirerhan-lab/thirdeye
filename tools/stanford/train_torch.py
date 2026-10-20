@@ -124,6 +124,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--folds-only", action="store_true", help="yalnızca çapraz doğrulama katlarını çalıştır")
     a = ap.parse_args()
     d = os.path.join(a.data, "prepared")
     meta = json.load(open(os.path.join(d, "cases.json"), encoding="utf-8"))
@@ -138,15 +139,30 @@ def main():
     folds = group_folds(groups, y.tolist(), a.folds, a.seed)
     oof = np.zeros(N, np.float32)
     fold_auc = []
+    # Her kat ayrı kaydedilir; yarıda kalan eğitim biten katları atlayarak sürdürülür.
+    ckdir = os.path.join(d, "folds")
+    os.makedirs(ckdir, exist_ok=True)
+    sig = f"e{a.epochs}_f{a.folds}_s{a.seed}_n{N}"
     for k, fg in enumerate(folds):
         va = [i for i in range(N) if groups[i] in fg]
+        ck = os.path.join(ckdir, f"{sig}_k{k}.json")
+        if os.path.exists(ck):
+            r = json.load(open(ck))
+            oof[va] = np.array(r["pred"], np.float32)
+            fold_auc.append(r["auc"])
+            print(f"kat {k + 1}/{a.folds}: kayıttan (AUC {r['auc']})", flush=True)
+            continue
         tr = [i for i in range(N) if groups[i] not in fg]
         net, mean, std = fit(X, Fv, y, tr, a.epochs, a.seed + k)
         oof[va] = predict(net, X, Fv, mean, std, va)
         ps, ys = nodule_level(groups, y.tolist(), oof.tolist(), va)
         fold_auc.append(auc(ps, ys))
+        json.dump({"pred": oof[va].tolist(), "auc": fold_auc[-1]}, open(ck, "w"))
         print(f"kat {k + 1}/{a.folds}: AUC {fold_auc[-1]} ({len(ys)} nodül)", flush=True)
 
+    if a.folds_only:
+        print("Katlar tamamlandı; son model için --folds-only olmadan tekrar çalıştırın.")
+        return
     hist = []
     net, mean, std = fit(X, Fv, y, list(range(N)), a.epochs, a.seed + 100, hist)
     par_idx = list(range(min(16, N)))

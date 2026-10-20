@@ -13,6 +13,7 @@ Veri seti Stanford Research Agreement kapsamında yalnızca ticari olmayan araş
 ham görüntüler bu klasör dışına kopyalanmamalı ve paylaşılmamalıdır.
 """
 import argparse
+import gc
 import json
 import os
 import sys
@@ -96,7 +97,8 @@ def main():
         sys.exit(f"Beklenen alanlar bulunamadı. Mevcut: {list(f.keys())}. Önce --inspect ile yapıya bakın.")
     print(f"Alanlar: görüntü={k_img} maske={k_mask} nodül={k_id} kare={k_frame}")
     ids = np.array([decode(x).strip() for x in f[k_id][:]])
-    frames = f[k_frame][:] if k_frame else np.arange(len(ids))
+    # Kare numarası metin olarak saklanmış olabilir ("10" < "2" sıralamasını önlemek için sayıya çevrilir).
+    frames = np.array([int(decode(x).strip() or 0) for x in f[k_frame][:]]) if k_frame else np.arange(len(ids))
     os.makedirs(a.out, exist_ok=True)
 
     meta_by = {}
@@ -105,19 +107,54 @@ def main():
         for _, row in meta.iterrows():
             meta_by[str(row[id_col]).strip()] = row
 
+    # Kaldığı yerden devam: daha önce yazılmış nodüller atlanır.
+    index_path = os.path.join(a.out, "index.json")
+    partial_path = os.path.join(a.out, "index.partial.json")
     index = []
+    for p in (index_path, partial_path):
+        if os.path.exists(p):
+            index = json.load(open(p, encoding="utf-8"))["nodules"]
+            break
+    done = {r["annot_id"] for r in index if os.path.exists(os.path.join(a.out, r["file"] + "_mask.npy"))}
+    index = [r for r in index if r["annot_id"] in done]
     uniq = list(dict.fromkeys(ids))
+    safe_of = lambda x: "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in x)
+    # Özet kaydı olmadan diske yazılmış nodüller (yarıda kalan eski çalıştırma) de tanınır.
+    for aid in uniq:
+        sf = safe_of(aid)
+        if aid not in done and os.path.exists(os.path.join(a.out, sf + "_mask.npy")) and os.path.exists(os.path.join(a.out, sf + "_img.npy")):
+            try:
+                for suffix in ("_mask.npy", "_img.npy"):
+                    np.load(os.path.join(a.out, sf + suffix), mmap_mode="r")
+            except Exception:
+                continue
+            row = meta_by.get(aid)
+            index.append({"annot_id": aid, "file": sf, "frames": [], "n_total_frames": int((ids == aid).sum()),
+                          "label": label_of(row) if row is not None else None,
+                          "meta": {k: (None if pd.isna(v) else (v.item() if hasattr(v, "item") else v)) for k, v in row.items()} if row is not None else {}})
+            done.add(aid)
+    if done:
+        print(f"{len(done)} nodül önceden çıkarılmış, atlanıyor.", flush=True)
     ds = a.downscale
     for n, aid in enumerate(uniq):
+        if aid in done:
+            continue
         idx = np.where(ids == aid)[0]
         idx = idx[np.argsort(frames[idx])]
         # Maske alanına göre en büyük kesitler + taramaya yayılmış kareler seçilir.
-        masks_small = []
-        areas = []
-        for i in idx:
-            m = f[k_mask][i]
-            areas.append(int((m > 0).sum()))
-        areas = np.array(areas)
+        # Maske alanları: bitişik kare aralıkları blok halinde okunur (36 GB dosyada kare kare okumaktan çok daha hızlı).
+        areas = np.zeros(len(idx), np.int64)
+        order = np.argsort(idx)
+        sidx = idx[order]
+        start = 0
+        while start < len(sidx):
+            end = start
+            while end + 1 < len(sidx) and sidx[end + 1] == sidx[end] + 1 and end - start < 15:
+                end += 1
+            block = f[k_mask][sidx[start]:sidx[end] + 1]
+            areas[order[start:end + 1]] = (block.reshape(block.shape[0], -1) > 0).sum(1)
+            del block
+            start = end + 1
         valid = idx[areas > 0]
         if len(valid) == 0:
             continue
@@ -147,9 +184,12 @@ def main():
                "label": label_of(row) if row is not None else None,
                "meta": {k: (None if pd.isna(v) else (v.item() if hasattr(v, "item") else v)) for k, v in row.items()} if row is not None else {}}
         index.append(rec)
+        json.dump({"source": os.path.basename(a.hdf5), "downscale": ds, "nodules": index}, open(partial_path, "w", encoding="utf-8"), ensure_ascii=False)
+        del imgs, msks
+        gc.collect()
         print(f"[{n + 1}/{len(uniq)}] {aid}: {len(pick)} kare, etiket={rec['label']}", flush=True)
 
-    with open(os.path.join(a.out, "index.json"), "w", encoding="utf-8") as fp:
+    with open(index_path, "w", encoding="utf-8") as fp:
         json.dump({"source": os.path.basename(a.hdf5), "downscale": ds, "nodules": index}, fp, ensure_ascii=False, indent=1)
     labs = [r["label"] for r in index]
     print(f"\nTamamlandı: {len(index)} nodül · iyi huylu {labs.count(0)} · kötü huylu {labs.count(1)} · etiketsiz {labs.count(None)}")
