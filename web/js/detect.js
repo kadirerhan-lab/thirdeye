@@ -139,6 +139,24 @@ export function trackCandidates(perFrame) {
       else { const t = { items: [{ frame: f, cand: c }] }; tracks.push(t); used.add(t); }
     }
   }
+  // Prob nodülün üzerinden birden çok kez geçtiğinde oluşan izler birleştirilir
+  // (en büyük kesitleri büyük ölçüde örtüşen ve kare aralıkları çakışmayan izler).
+  const span = (t) => [t.items[0].frame, t.items[t.items.length - 1].frame];
+  const biggest = (t) => t.items.reduce((a, it) => (it.cand.area > a.cand.area ? it : a)).cand;
+  for (let i = 0; i < tracks.length; i++) {
+    for (let j = i + 1; j < tracks.length; j++) {
+      const A = tracks[i], B = tracks[j];
+      if (!A || !B) continue;
+      const [a0, a1] = span(A), [b0, b1] = span(B);
+      if (a0 <= b1 && b0 <= a1) continue;
+      const ba = biggest(A), bb = biggest(B);
+      if (bboxIoU(ba, bb) > 0.4 && Math.min(ba.area, bb.area) / Math.max(ba.area, bb.area) > 0.5) {
+        A.items = [...A.items, ...B.items].sort((x, y) => x.frame - y.frame);
+        tracks[j] = null;
+      }
+    }
+  }
+  for (let i = tracks.length - 1; i >= 0; i--) if (!tracks[i]) tracks.splice(i, 1);
   const minLen = F >= 6 ? Math.max(2, Math.round(0.08 * F)) : 1;
   const res = tracks.filter((t) => t.items.length >= minLen).map((t) => {
     const n = t.items.length;
@@ -197,6 +215,8 @@ export function adaptiveSegment(ratio, w, h, sx, sy, polarity = 'hypo', init = n
     if (c.area < 40 || c.area > 0.6 * ww * wh) continue;
     const touches = (c.x0 === 0 && X0 > 0) || (c.y0 === 0 && Y0 > 0) || (c.x1 === ww - 1 && X1 < w - 1) || (c.y1 === wh - 1 && Y1 < h - 1);
     if (touches) continue;
+    // Görüntünün kenarına dayanan bölge, büyük olasılıkla gölge veya kenar dokusuna taşmıştır.
+    if ((c.x0 === 0 && X0 === 0) || (c.x1 === ww - 1 && X1 === w - 1) || (c.y1 === wh - 1 && Y1 === h - 1)) continue;
     // Başlangıç adayından aşırı büyüyen veya komşu yapıya taşan (düşük doluluk) bölgeler elenir.
     if (init && c.area > 6 * (init.area ?? init.bw * init.bh * 0.7)) continue;
     if (c.area / ((c.x1 - c.x0 + 1) * (c.y1 - c.y0 + 1)) < 0.45) continue;
