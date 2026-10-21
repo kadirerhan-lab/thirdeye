@@ -62,7 +62,8 @@ export function frameOverlayCandidates(frame, cfg = DEFAULT_OVERLAY) {
 }
 
 // Tüm karelerde işaret maskesi + temizlenmiş kareler.
-export function cleanOverlays(frames, cfg = DEFAULT_OVERLAY) {
+export function cleanOverlays(frames, cfg = DEFAULT_OVERLAY, onFrame = null) {
+  if (onFrame) return cleanOverlaysAsync(frames, cfg ?? DEFAULT_OVERLAY, onFrame);
   const w = frames[0].width, h = frames[0].height, n = frames.length;
   const per = frames.map((f) => frameOverlayCandidates(f, cfg));
   // Videoda: karelerin %90'ında aday olan pikseller sabit ekran işaretidir.
@@ -87,5 +88,37 @@ export function cleanOverlays(frames, cfg = DEFAULT_OVERLAY) {
     if (c) inpaintRGBA(data, m, w, h);
     return { data, width: w, height: h };
   });
+  return { cleaned, masks, ratio: totalPx / (w * h * n) };
+}
+
+// Kare kare ilerleyen sürüm: her kareden sonra arayüze nefes aldırır.
+async function cleanOverlaysAsync(frames, cfg, onFrame) {
+  const w = frames[0].width, h = frames[0].height, n = frames.length;
+  const per = frames.map((f) => frameOverlayCandidates(f, cfg));
+  // Videoda: karelerin %90'ında aday olan pikseller sabit ekran işaretidir.
+  let staticMask = null;
+  if (n >= 6) {
+    const cnt = new Uint16Array(w * h);
+    for (const p of per) for (let i = 0; i < w * h; i++) cnt[i] += p.raw[i];
+    staticMask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) staticMask[i] = cnt[i] >= 0.9 * n ? 1 : 0;
+  }
+  let totalPx = 0;
+  const masks = [];
+  const cleaned = [];
+  for (let k = 0; k < frames.length; k++) {
+    const f = frames[k];
+    let m = per[k].mask;
+    if (staticMask) { m = Uint8Array.from(m); for (let i = 0; i < w * h; i++) if (staticMask[i]) m[i] = 1; }
+    m = dilate(m, w, h, cfg.dilation);
+    let c = 0;
+    for (let i = 0; i < w * h; i++) c += m[i];
+    totalPx += c;
+    masks.push(m);
+    const data = Uint8ClampedArray.from(f.data);
+    if (c) inpaintRGBA(data, m, w, h);
+    cleaned.push({ data, width: w, height: h });
+    await onFrame(k, frames.length);
+  }
   return { cleaned, masks, ratio: totalPx / (w * h * n) };
 }

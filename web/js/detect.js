@@ -77,7 +77,7 @@ export function maskToCropped(full, w, h) {
 
 // Bir karedeki nodül adayları.
 export function detectCandidates(gray, w, h, cfg = DEFAULT_DETECT, pre = null) {
-  const s = pre?.s ?? smoothFor(gray, w, h);
+  const s = pre?.ratio ? null : smoothFor(gray, w, h);
   const bg = pre?.bg ?? rowBackground(s, w, h);
   const ratio = pre?.ratio ?? ratioMap(s, bg, w, h);
   const top = Math.round(h * cfg.topSkip);
@@ -112,7 +112,7 @@ export function detectCandidates(gray, w, h, cfg = DEFAULT_DETECT, pre = null) {
     }
   }
   out.sort((a, b) => b.score - a.score);
-  return { candidates: out.slice(0, 6), s, bg, ratio };
+  return { candidates: out.slice(0, 6), bg, ratio };
 }
 
 function bboxIoU(a, b) {
@@ -198,7 +198,7 @@ export function adaptiveSegment(ratio, w, h, sx, sy, polarity = 'hypo', init = n
   }
   const lx = Math.round(sx - X0), ly = Math.round(sy - Y0);
   const thresholds = [];
-  if (polarity === 'hypo') for (let t = 0.5; t <= 0.96; t += 0.02) thresholds.push(t);
+  if (polarity === 'hypo') for (let t = 0.5; t <= 0.96; t += 0.03) thresholds.push(t);
   else for (let t = 1.06; t <= 1.8; t += 0.03) thresholds.push(t);
   const cands = [];
   for (const t of thresholds) {
@@ -264,7 +264,7 @@ export function adaptiveSegment(ratio, w, h, sx, sy, polarity = 'hypo', init = n
 
 // Tıklanan noktadan segmentasyon. Kontrast yoksa açıklayıcı bir neden döner.
 export function segmentFromSeed(gray, w, h, sx, sy, sens = 0.6, pre = null, init = null) {
-  const s = pre?.s ?? smoothFor(gray, w, h);
+  const s = pre?.ratio ? null : smoothFor(gray, w, h);
   const bg = pre?.bg ?? rowBackground(s, w, h);
   const ratio = pre?.ratio ?? ratioMap(s, bg, w, h);
   sx = Math.round(clamp(sx, 0, w - 1)); sy = Math.round(clamp(sy, 0, h - 1));
@@ -330,7 +330,7 @@ export function propagate(grays, w, h, startFrame, startMask, preCache = null) {
   res.set(startFrame, start);
   for (const dir of [-1, 1]) {
     let prev = start;
-    for (let f = startFrame + dir; f >= 0 && f < grays.length; f += dir) {
+    for (let f = startFrame + dir; f >= 0 && f < grays.length && Math.abs(f - startFrame) <= 10; f += dir) {
       const pre = preCache ? preCache(f) : null;
       const r = segmentFromSeed(grays[f], w, h, prev.cx, prev.cy, 0.6, pre, prev);
       if (!r.ok) break;

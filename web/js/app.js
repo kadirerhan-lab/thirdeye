@@ -1,5 +1,5 @@
 // ThirdEye arayüz denetleyicisi.
-import { preprocess, detectAll, noduleFromTrack, noduleFromManual, syntheticTrainingCase, PATCH } from './pipeline.js';
+import { preprocessAsync, detectAll, noduleFromTrack, noduleFromManual, syntheticTrainingCase, PATCH } from './pipeline.js';
 import { segmentFromSeed, ellipseMask, contourOf, DEFAULT_DETECT } from './detect.js';
 import { featureRows } from './features.js';
 import { TIRADS, TR_INFO, scoreTirads, suggestTirads, recommendation } from './tirads.js';
@@ -24,6 +24,9 @@ import * as store from './store.js';
 const $ = (id) => document.getElementById(id);
 const tick = () => new Promise((r) => setTimeout(r, 0));
 // Dosya indirme yalnızca gömülü (sandbox) önizlemelerde kapalıdır.
+// Telefon ve tabletlerde daha küçük çözünürlük ve daha az kare: işlem süresi ve bellek kabaca yarıya iner.
+const MOBILE = (typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches) || /Android|iPhone|iPad|Mobi/i.test(navigator.userAgent);
+const MAX_W = MOBILE ? 480 : 640;
 const CAN_DOWNLOAD = !/claude(usercontent)?\.(ai|com)$/.test(location.hostname);
 const fmtPct = (p, d = 1) => `%${(p * 100).toFixed(d).replace('.', ',')}`;
 const fmtNum = (v, d = 1) => v.toFixed(d).replace('.', ',');
@@ -100,7 +103,7 @@ async function extractVideoFrames(file, n) {
     v.currentTime = 1e6; await once('seeked'); v.currentTime = 0; await once('seeked');
   }
   const dur = v.duration;
-  const scale = Math.min(1, 640 / v.videoWidth);
+  const scale = Math.min(1, MAX_W / v.videoWidth);
   const W = Math.round(v.videoWidth * scale), H = Math.round(v.videoHeight * scale);
   const c = el('canvas', { width: W, height: H });
   const ctx = c.getContext('2d', { willReadFrequently: true });
@@ -123,7 +126,7 @@ async function decodeImages(files) {
   const frames = [];
   for (const f of sorted) {
     const bmp = await createImageBitmap(f);
-    if (!W) { const s = Math.min(1, 640 / bmp.width); W = Math.round(bmp.width * s); H = Math.round(bmp.height * s); }
+    if (!W) { const s = Math.min(1, MAX_W / bmp.width); W = Math.round(bmp.width * s); H = Math.round(bmp.height * s); }
     const c = el('canvas', { width: W, height: H });
     const ctx = c.getContext('2d', { willReadFrequently: true });
     ctx.drawImage(bmp, 0, 0, W, H);
@@ -154,7 +157,7 @@ async function loadSample(kind) {
   busy('Sentetik tarama üretiliyor…', 0.05);
   await tick();
   const seed = kind === 'malignant' ? 7 : kind === 'benign' ? 11 : 100 + Math.floor(Math.random() * 1e6);
-  const c = generateCase({ seed, preset: kind === 'random' ? 'random' : kind, frames: +$('framesSelect').value });
+  const c = generateCase({ seed, preset: kind === 'random' ? 'random' : kind, frames: +$('framesSelect').value, w: MAX_W, h: Math.round(MAX_W * 0.75) });
   state.truth = c.truth;
   const names = { malignant: 'Sentetik · şüpheli görünüm', benign: 'Sentetik · iyi huylu görünüm', random: `Sentetik · rastgele #${seed}` };
   await ingest(c.frames, { name: names[kind], kind: 'synthetic', mmPerPx: c.mmPerPx, seed });
@@ -166,7 +169,7 @@ async function ingest(frames, src) {
   state.edited.clear();
   busy('Ön işleme: görüntü alanı ve ekran işaretleri…', 0.1);
   await tick();
-  const prep = preprocess(frames, { clean: $('optClean').checked });
+  const prep = await preprocessAsync(frames, { clean: $('optClean').checked, onProgress: (p) => busy('Ön işleme: görüntü alanı ve ekran işaretleri…', 0.1 + 0.2 * p) });
   state.prep = prep;
   if (src.mmPerPx) {
     state.mmPerPx = src.mmPerPx;
@@ -188,11 +191,13 @@ async function runDetection() {
   busy('Nodül adayları taranıyor…', 0);
   state.det = await detectAll(prep.grays, prep.w, prep.h, cfg, (p) => busy(`Nodül adayları taranıyor (${Math.round(p * 100)}%)`, p));
   state.tracks = state.det.tracks;
-  busy(null);
   if (state.tracks.length) {
-    selectTrack(state.tracks[0]);
+    busy('Nodül sınırı belirleniyor…', 0.95);
+    await selectTrack(state.tracks[0]);
+    busy(null);
     hint('En olası aday seçildi. Başka bir adaya geçebilir, nodüle tıklayabilir veya sürükleyerek elips çizebilirsiniz.');
   } else {
+    busy(null);
     state.nodule = null;
     renderCandidates(); renderAll();
     hint('Otomatik aday bulunamadı. Nodülün içine tıklayın veya sürükleyerek elips çizin.', true);
@@ -209,10 +214,14 @@ function renderSourceFacts() {
 }
 
 // ---------- nodül seçimi ----------
-function selectTrack(t) {
+let selectToken = 0;
+async function selectTrack(t) {
   const { prep } = state;
+  const token = ++selectToken;
   state.selTrack = t;
-  state.nodule = noduleFromTrack(t, prep.grays, prep.w, prep.h, state.mmPerPx, state.det.preCache);
+  const nod = await noduleFromTrack(t, prep.grays, prep.w, prep.h, state.mmPerPx, state.det.preCache);
+  if (token !== selectToken) return; // bu arada başka bir aday seçildi
+  state.nodule = nod;
   if (!state.nodule) { hint('Bu aday için özellik çıkarılamadı.', true); return; }
   state.cur = state.nodule.bestFrame;
   afterNodule();
@@ -878,7 +887,9 @@ function bind() {
     if (e.key === 'ArrowRight') { stopPlay(); setFrame(state.cur + 1); }
     if (e.key === 'ArrowLeft') { stopPlay(); setFrame(state.cur - 1); }
   });
-  window.addEventListener('resize', () => render());
+  // Telefonda adres çubuğu açılıp kapandıkça çok sayıda resize olayı gelir: kare başına bir kez çiz.
+  let resizeQueued = false;
+  window.addEventListener('resize', () => { if (resizeQueued) return; resizeQueued = true; requestAnimationFrame(() => { resizeQueued = false; render(); }); });
 
   $('labelSelect').addEventListener('change', () => { $('addCaseBtn').disabled = !($('labelSelect').value && state.nodule); });
   $('addCaseBtn').addEventListener('click', addCurrentCase);
@@ -921,6 +932,7 @@ function bind() {
 function renderAll() { renderCandidates(); renderFeatures(); renderTiradsForm(); renderTiradsResult(); renderScore(); render(); markSteps(); }
 
 async function init() {
+  if (MOBILE) $('framesSelect').value = '24';
   bind();
   renderAll();
   drawLoss(null); drawRoc(null);

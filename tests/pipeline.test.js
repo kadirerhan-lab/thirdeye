@@ -67,7 +67,7 @@ test('uçtan uca: sentetik taramalar doğru kategoriye düşer', async () => {
     const t = d.tracks[0];
     const gx = Math.round(t.best.cx + p.sector.x), gy = Math.round(t.best.cy + p.sector.y);
     assert.equal(c.truth.mask[gy * c.w + gx], 1, 'ilk aday gerçek nodülün içinde olmalı');
-    const n = noduleFromTrack(t, p.grays, p.w, p.h, c.mmPerPx, d.preCache);
+    const n = await noduleFromTrack(t, p.grays, p.w, p.h, c.mmPerPx, d.preCache);
     assert.equal(scoreTirads(suggestTirads(n.features).sel).category, expect);
   }
 });

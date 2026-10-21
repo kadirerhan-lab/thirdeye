@@ -26,6 +26,20 @@ export function preprocess(frames, { clean = true } = {}) {
   return { sector, w, h, orig, cleaned, overlayMasks, overlayRatio, grays };
 }
 
+// Arayüzü kilitlememek için kareler arasında nefes alan sürüm (telefonlarda önemli).
+export async function preprocessAsync(frames, { clean = true, onProgress = null } = {}) {
+  const sector = detectSector(frames, frames[0].width, frames[0].height);
+  const orig = frames.map((f) => cropFrame(f, sector));
+  const w = sector.w, h = sector.h;
+  let cleaned = orig, overlayMasks = null, overlayRatio = 0;
+  if (clean) {
+    const r = await cleanOverlays(orig, undefined, async (k, n) => { onProgress?.((k + 1) / n); if (k % 3 === 2) await tick(); });
+    cleaned = r.cleaned; overlayMasks = r.masks; overlayRatio = r.ratio;
+  }
+  const grays = cleaned.map((f) => rgbaToGray(f.data, w, h));
+  return { sector, w, h, orig, cleaned, overlayMasks, overlayRatio, grays };
+}
+
 // Kare başına ön hesaplar (yumuşatma, satır referansı, oran haritası) önbelleğe alınır.
 export function makePreCache(grays, w, h) {
   const cache = new Map();
@@ -33,7 +47,8 @@ export function makePreCache(grays, w, h) {
     if (!cache.has(f)) {
       const s = smoothFor(grays[f], w, h);
       const bg = rowBackground(s, w, h);
-      cache.set(f, { s, bg, ratio: ratioMap(s, bg, w, h) });
+      // Yalnızca oran haritası ve satır referansı saklanır (bellek tasarrufu).
+      cache.set(f, { bg, ratio: ratioMap(s, bg, w, h) });
     }
     return cache.get(f);
   };
@@ -44,18 +59,22 @@ export async function detectAll(grays, w, h, cfg = DEFAULT_DETECT, onProgress = 
   const perFrame = [];
   for (let f = 0; f < grays.length; f++) {
     perFrame.push(detectCandidates(grays[f], w, h, cfg, pc(f)).candidates);
-    if (onProgress && f % 3 === 2) { onProgress((f + 1) / grays.length); await tick(); }
+    onProgress?.((f + 1) / grays.length);
+    await tick();
   }
   return { perFrame, tracks: trackCandidates(perFrame), preCache: pc };
 }
 
 // Bir izden (otomatik) nodül nesnesi: kare maskeleri + en büyük kesit + özellikler.
-export function noduleFromTrack(track, grays, w, h, mmPerPx, preCache = null) {
+export async function noduleFromTrack(track, grays, w, h, mmPerPx, preCache = null, maxFrames = 5) {
   const frameMasks = new Map(track.items.map((it) => [it.frame, it.cand]));
   // Her izlenen karede aday, uyarlanabilir segmentasyonla dış sınıra kadar genişletilir;
   // ölçüm karesi, gerçek segmentasyon alanı en büyük olan karedir.
   let bestFrame = track.bestFrame, mask = refineMask(cleanCandidate(expandMask(track.best, w, h), w, h), w, h), bestArea = 0;
-  for (const it of track.items) {
+  // Aday alanı en büyük birkaç karede segmentasyon yapılır (tüm karelerde yapmak yavaş ve gereksiz).
+  const chosen = [...track.items].sort((a, b) => b.cand.area - a.cand.area).slice(0, maxFrames);
+  for (const it of chosen) {
+    await tick();
     const b = it.cand;
     const pre = preCache ? preCache(it.frame) : null;
     const seg = segmentFromSeed(grays[it.frame], w, h, b.cx, b.cy, 0.6, pre, b);
@@ -83,14 +102,27 @@ export function noduleFromManual(frame, mask, grays, w, h, mmPerPx, preCache) {
 function finishNodule(frameMasks, bestFrame, mask, grays, w, h, mmPerPx, source) {
   const features = computeFeatures(grays[bestFrame], w, h, mask, mmPerPx);
   if (!features) return null;
+  // Odak taraması nodül çevresindeki küçük pencerede yapılır (tüm görüntü yerine).
+  const fociInWindow = (gray, cm) => {
+    const pad = 12;
+    const x0 = Math.max(0, cm.x0 - pad), y0 = Math.max(0, cm.y0 - pad);
+    const x1 = Math.min(w - 1, cm.x0 + cm.bw - 1 + pad), y1 = Math.min(h - 1, cm.y0 + cm.bh - 1 + pad);
+    const ww = x1 - x0 + 1, wh = y1 - y0 + 1;
+    const g = new Float32Array(ww * wh), m = new Uint8Array(ww * wh);
+    for (let y = 0; y < wh; y++) for (let x = 0; x < ww; x++) {
+      g[y * ww + x] = gray[(y + y0) * w + x + x0];
+      const mx = x + x0 - cm.x0, my = y + y0 - cm.y0;
+      if (mx >= 0 && my >= 0 && mx < cm.bw && my < cm.bh) m[y * ww + x] = cm.m[my * cm.bw + mx];
+    }
+    return echogenicFoci(g, ww, wh, m, mmPerPx, features.parenchyma, Math.sqrt(cm.area / Math.PI), cm.cx - x0, cm.cy - y0, features.solidMean);
+  };
   // Ekojenik odaklar tek karede kaçabilir: nodülün görüldüğü tüm karelerde aranır.
   if (frameMasks.size > 1) {
     const eqR = Math.sqrt(features.areaPx / Math.PI);
     let pMax = features.punctateCount, mMax = features.macroCount, rMax = features.rimCoverage, framesWithPunctate = 0;
     for (const [f, cm] of frameMasks) {
       if (f === bestFrame) { if (features.punctateCount) framesWithPunctate++; continue; }
-      const full = expandMask(cm, w, h);
-      const r = echogenicFoci(grays[f], w, h, full, mmPerPx, features.parenchyma, Math.sqrt(cm.area / Math.PI) || eqR, cm.cx, cm.cy, features.solidMean);
+      const r = fociInWindow(grays[f], cm);
       pMax = Math.max(pMax, r.punctate); mMax = Math.max(mMax, r.macro); rMax = Math.max(rMax, r.rimCoverage);
       if (r.punctate) framesWithPunctate++;
     }
