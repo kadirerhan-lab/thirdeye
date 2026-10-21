@@ -89,6 +89,8 @@ export function detectCandidates(gray, w, h, cfg = DEFAULT_DETECT, pre = null) {
       bin[y * w + x] = polarity === 'hypo' ? (v < cfg.hypo ? 1 : 0) : (v > cfg.hyper ? 1 : 0);
     }
     bin = fillHoles(close(open(bin, w, h, 2), w, h, 3), w, h);
+    // Delikler doldurulduktan sonra ikinci açma: nodülü komşu koyu yapılara bağlayan ince kanallar kopar.
+    bin = open(bin, w, h, 4);
     const { labels, comps } = labelComponents(bin, w, h, ratio);
     for (const c of comps) {
       const fa = c.area / (w * h);
@@ -292,6 +294,21 @@ export function ellipseMask(w, h, x0, y0, x1, y1) {
     }
   }
   return m;
+}
+
+// Ham aday maskesinden köprüleri keser, merkeze en yakın ana parçayı tutar.
+export function cleanCandidate(mask, w, h) {
+  let area = 0;
+  for (let i = 0; i < w * h; i++) area += mask[i];
+  const r = Math.max(2, Math.round(0.08 * Math.sqrt(area)));
+  const o = open(mask, w, h, r);
+  const { labels, comps } = labelComponents(o, w, h);
+  if (!comps.length) return mask;
+  const best = comps.reduce((a, b) => (b.area > a.area ? b : a));
+  const keep = dilate(componentMask(labels, best.id, w, h), w, h, r);
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) out[i] = keep[i] && mask[i] ? 1 : 0;
+  return out;
 }
 
 // Maske düzeltme: kapanış, delik doldurma, kontur yumuşatma.

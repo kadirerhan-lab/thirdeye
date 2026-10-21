@@ -5,7 +5,7 @@ import { rgbaToGray, samplePatch, clamp } from './imgproc.js';
 import { detectSector, cropFrame, cleanOverlays } from './preprocess.js';
 import {
   detectCandidates, trackCandidates, expandMask, refineMask, segmentFromSeed,
-  smoothFor, rowBackground, ratioMap, maskToCropped, propagate, DEFAULT_DETECT,
+  smoothFor, rowBackground, ratioMap, maskToCropped, propagate, DEFAULT_DETECT, cleanCandidate,
 } from './detect.js';
 import { computeFeatures, echogenicFoci } from './features.js';
 import { generateCase } from './synth.js';
@@ -54,7 +54,7 @@ export function noduleFromTrack(track, grays, w, h, mmPerPx, preCache = null) {
   const frameMasks = new Map(track.items.map((it) => [it.frame, it.cand]));
   // Her izlenen karede aday, uyarlanabilir segmentasyonla dış sınıra kadar genişletilir;
   // ölçüm karesi, gerçek segmentasyon alanı en büyük olan karedir.
-  let bestFrame = track.bestFrame, mask = refineMask(expandMask(track.best, w, h), w, h), bestArea = 0;
+  let bestFrame = track.bestFrame, mask = refineMask(cleanCandidate(expandMask(track.best, w, h), w, h), w, h), bestArea = 0;
   for (const it of track.items) {
     const b = it.cand;
     const pre = preCache ? preCache(it.frame) : null;
